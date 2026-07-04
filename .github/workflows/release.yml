@@ -10,7 +10,24 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            --draft=false
+          echo "✅ Release ${{ github.ref_name }} created"
+
+  build:
+    needs: create-release
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -28,19 +45,42 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build and Publish Linux
+      - name: Build Linux
+        if: matrix.os == 'ubuntu-latest'
+        run: npx electron-builder --linux AppImage deb --publish never
+
+      - name: Build Windows
+        if: matrix.os == 'windows-latest'
+        run: npx electron-builder --win nsis --publish never
+
+      - name: Upload Linux Artifacts
         if: matrix.os == 'ubuntu-latest'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          npx electron-builder --linux AppImage deb --publish always
-          
-          # 上传独立的 app.asar 文件
-          cd dist/linux-unpacked/resources
-          gh release upload ${{ github.ref_name }} app.asar --clobber
+          echo "📦 Uploading Linux artifacts..."
+          ls -la dist/ || true
+          # 上传 AppImage、deb、blockmap、yml
+          for f in dist/*.AppImage dist/*.deb dist/*.AppImage.blockmap dist/*.yml; do
+            [ -f "$f" ] && echo "  → $f" && gh release upload "${{ github.ref_name }}" "$f" --clobber
+          done
+          # 上传 app.asar
+          if [ -f dist/linux-unpacked/resources/app.asar ]; then
+            echo "  → app.asar"
+            gh release upload "${{ github.ref_name }}" dist/linux-unpacked/resources/app.asar --clobber
+          fi
+          echo "✅ Linux upload done"
 
-      - name: Build and Publish Windows
+      - name: Upload Windows Artifacts
         if: matrix.os == 'windows-latest'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win nsis --publish always
+        shell: bash
+        run: |
+          echo "📦 Uploading Windows artifacts..."
+          ls -la dist/ || true
+          # 上传 Setup.exe、blockmap、yml
+          for f in dist/*.exe dist/*.exe.blockmap dist/*.yml; do
+            [ -f "$f" ] && echo "  → $f" && gh release upload "${{ github.ref_name }}" "$f" --clobber
+          done
+          echo "✅ Windows upload done"
