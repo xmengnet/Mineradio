@@ -9,6 +9,10 @@
 - The new uninstaller no longer removes the whole installation root or app subfolders recursively; it deletes only known top-level Mineradio/Electron files and leaves unrelated files in place.
 - Legacy uninstallers without the new safety marker are skipped during install; the setup deletes only the old `Uninstall Mineradio.exe` file and registry entry so it cannot indirectly trigger an older unsafe uninstall routine.
 - Installer/uninstaller safety fixes require the full setup package; quick patch JSON files must not be used as the only delivery path for this issue.
+- 完全融合了 Navidrome 私有音乐服务器，搜索与播放界面已全面打通并移除冗余勾选框。
+- 修复了 3D 播放器页面因 Canvas 本地代理跨域拦截导致的封面图片变黑问题。
+- 新增针对 ALAC/APE/WMA 等前端不支持的高保真格式智能嗅探，自动在服务端无损转码为 FLAC。
+- 修复了 Linux AppImage 在 Wayland 桌面的窗口图标无法匹配，新增 desktopName 映射与动态 PNG 挂载。
 
 ## v1.1.0
 

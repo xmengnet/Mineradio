@@ -62,7 +62,11 @@ const QQ_COOKIE_FILE = process.env.QQ_COOKIE_FILE || path.join(__dirname, '.qq-c
 const UPDATE_WORK_DIR = process.env.MINERADIO_UPDATE_DIR || path.join(__dirname, 'updates');
 const UPDATE_DOWNLOAD_DIR = process.env.MINERADIO_UPDATE_DOWNLOAD_DIR || path.join(UPDATE_WORK_DIR, 'downloads');
 const UPDATE_PATCH_BACKUP_DIR = process.env.MINERADIO_PATCH_BACKUP_DIR || path.join(UPDATE_WORK_DIR, 'backups', 'patches');
-const BEATMAP_CACHE_DIR = process.env.MINERADIO_BEAT_CACHE_DIR || 'D:\\MineradioCache\\beatmaps';
+const BEATMAP_CACHE_DIR = process.env.MINERADIO_BEAT_CACHE_DIR || (
+  process.platform === 'win32'
+    ? 'D:\\MineradioCache\\beatmaps'
+    : path.join(process.env.XDG_CACHE_HOME || path.join(require('os').homedir(), '.cache'), 'mineradio', 'beatmaps')
+);
 const APP_PACKAGE = readPackageInfo();
 const APP_VERSION = process.env.MINERADIO_VERSION || APP_PACKAGE.version || '0.9.11';
 const UPDATE_CONFIG = readUpdateConfig(APP_PACKAGE);
@@ -184,6 +188,40 @@ catch (e) { qqCookie = ''; }
 function saveQQCookie(c) {
   qqCookie = normalizeCookieHeader(c) || rawCookieFallback(c);
   try { fs.writeFileSync(QQ_COOKIE_FILE, qqCookie); } catch (e) {}
+}
+
+const NAVIDROME_CONFIG_FILE = process.env.NAVIDROME_CONFIG_FILE || path.join(__dirname, '.navidrome-config');
+let navidromeConfig = { enabled: false, server: '', username: '', password: '' };
+try { if (fs.existsSync(NAVIDROME_CONFIG_FILE)) navidromeConfig = JSON.parse(fs.readFileSync(NAVIDROME_CONFIG_FILE, 'utf8')); } catch (e) { }
+
+function saveNavidromeConfig(c) {
+  navidromeConfig = Object.assign(navidromeConfig, c);
+  try { fs.writeFileSync(NAVIDROME_CONFIG_FILE, JSON.stringify(navidromeConfig, null, 2)); } catch (e) {}
+}
+
+function navidromeAuthParams() {
+  if (!navidromeConfig.server) return '';
+  const salt = crypto.randomBytes(6).toString('hex');
+  const token = crypto.createHash('md5').update(navidromeConfig.password + salt).digest('hex');
+  return `u=${encodeURIComponent(navidromeConfig.username)}&t=${token}&s=${salt}&v=1.16.1&c=Mineradio&f=json`;
+}
+
+function ndSongToMineradio(song) {
+  if (!song) return null;
+  const coverUrl = song.coverArt ? '/api/navidrome/cover?id=' + encodeURIComponent(song.coverArt) : null;
+  return {
+    id: song.id,
+    name: song.title,
+    artist: song.artist || 'Unknown',
+    album: song.album || '',
+    cover: coverUrl,
+    ar: [{ id: song.artistId || '', name: song.artist || 'Unknown' }],
+    al: { id: song.albumId || '', name: song.album || '', picUrl: coverUrl },
+    dt: (song.duration || 0) * 1000,
+    provider: 'navidrome',
+    suffix: song.suffix || '',
+    ndCoverId: song.coverArt || ''
+  };
 }
 
 // ---------- 工具 ----------
@@ -506,6 +544,9 @@ async function fetchManifestUpdateInfo(ref) {
 }
 function beatCacheRootInfo() {
   const dir = path.resolve(BEATMAP_CACHE_DIR);
+  if (process.platform !== 'win32') {
+    return { dir, root: '/', drive: '', allowed: true, available: true };
+  }
   const root = path.parse(dir).root;
   const drive = root ? root.replace(/[\\\/]+$/, '').toUpperCase() : '';
   const allowed = !!root && !/^C:$/i.test(drive);
@@ -4156,6 +4197,92 @@ const server = http.createServer(async (req, res) => {
       while (true) { const c = await reader.read(); if (c.done) break; res.write(c.value); }
       res.end();
     } catch (err) { console.error('[Cover]', err); res.writeHead(500); res.end(); }
+    return;
+  }
+
+  // ---------- Navidrome 代理 ----------
+  if (pn === '/api/navidrome/config') {
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => body += chunk);
+      req.on('end', () => {
+        try { saveNavidromeConfig(JSON.parse(body)); sendJSON(res, { code: 200, data: navidromeConfig }); }
+        catch (e) { sendJSON(res, { code: 500, message: e.message }); }
+      });
+      return;
+    }
+    sendJSON(res, { code: 200, data: navidromeConfig });
+    return;
+  }
+  if (pn === '/api/navidrome/search') {
+    if (!navidromeConfig.server) { sendJSON(res, { code: 200, songs: [] }); return; }
+    const kw = url.searchParams.get('keywords') || '';
+    console.log('[NDSearch] ' + kw + ' limit: 20');
+    const auth = navidromeAuthParams();
+    const up = `${navidromeConfig.server.replace(/\/+$/, '')}/rest/search3.view?query=${encodeURIComponent(kw)}&songCount=20&${auth}`;
+    try {
+      const resp = await fetch(up).then(r => r.json());
+      const songs = (resp['subsonic-response']?.searchResult3?.song || []).map(ndSongToMineradio);
+      sendJSON(res, { code: 200, songs });
+    } catch (e) { sendJSON(res, { code: 500, songs: [] }); }
+    return;
+  }
+  if (pn === '/api/navidrome/song/url') {
+    if (!navidromeConfig.server) { sendJSON(res, { code: 500, url: null }); return; }
+    const id = url.searchParams.get('id');
+    const suffix = url.searchParams.get('suffix') || '';
+    const auth = navidromeAuthParams();
+    let formatParam = '';
+    // 如果浏览器原生不支持该格式，强制转码为 flac 保证无损兼容量
+    if (/^(alac|ape|wma|wv|tta|dsf|dff|m4a|m4b)$/i.test(suffix)) {
+      formatParam = '&format=flac';
+    }
+    const up = `${navidromeConfig.server.replace(/\/+$/, '')}/rest/stream.view?id=${encodeURIComponent(id)}${formatParam}&${auth}`;
+    sendJSON(res, { code: 200, url: up });
+    return;
+  }
+  if (pn === '/api/navidrome/lyric') {
+    if (!navidromeConfig.server) { sendJSON(res, { code: 404 }); return; }
+    const id = url.searchParams.get('id');
+    const auth = navidromeAuthParams();
+    const up = `${navidromeConfig.server.replace(/\/+$/, '')}/rest/getLyricsBySongId.view?id=${encodeURIComponent(id)}&${auth}`;
+    try {
+      const resp = await fetch(up).then(r => r.json());
+      const lyrics = resp['subsonic-response']?.lyricsList?.structuredLyrics || [];
+      const lineLyrics = lyrics.find(l => l.synced) || lyrics[0] || {};
+      const formatTime = (ms) => {
+        const t = ms / 1000;
+        const m = Math.floor(t / 60);
+        const s = Math.floor(t % 60);
+        const f = Math.floor((t % 1) * 100);
+        return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(f).padStart(2,'0')}`;
+      };
+      const lyricStr = (lineLyrics.line || []).map(l => `[${formatTime(l.start)}]${l.value}`).join('\n');
+      sendJSON(res, { code: 200, lyric: lyricStr });
+    } catch (e) { sendJSON(res, { code: 500 }); }
+    return;
+  }
+  if (pn === '/api/navidrome/cover') {
+    if (!navidromeConfig.server) { res.writeHead(404); res.end(); return; }
+    const id = url.searchParams.get('id');
+    const auth = navidromeAuthParams();
+    const up = `${navidromeConfig.server.replace(/\/+$/, '')}/rest/getCoverArt.view?id=${encodeURIComponent(id)}&${auth}`;
+    try {
+      const resp = await fetch(up);
+      const ct = resp.headers.get('content-type') || 'image/jpeg';
+      const cl = resp.headers.get('content-length');
+      const hdr = {
+        'Content-Type': ct,
+        'Access-Control-Allow-Origin': '*',
+        'Cross-Origin-Resource-Policy': 'cross-origin',
+        'Cache-Control': 'public, max-age=86400',
+      };
+      if (cl) hdr['Content-Length'] = cl;
+      res.writeHead(resp.status, hdr);
+      const reader = resp.body.getReader();
+      while (true) { const { done, value } = await reader.read(); if (done) break; res.write(value); }
+      res.end();
+    } catch(e) { res.writeHead(500); res.end(); }
     return;
   }
 

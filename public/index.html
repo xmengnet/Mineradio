@@ -1910,6 +1910,7 @@ html.control-glass-svg-ok #visual-guide-btn:hover{
       <button id="search-mode-song" class="active" type="button" onclick="setSearchMode('song')" aria-selected="true">All</button>
       <button id="search-mode-netease" type="button" onclick="setSearchMode('netease')" aria-selected="false">NE</button>
       <button id="search-mode-qq" type="button" onclick="setSearchMode('qq')" aria-selected="false">QQ</button>
+      <button id="search-mode-navidrome" type="button" onclick="setSearchMode('navidrome')" aria-selected="false">ND</button>
       <button id="search-mode-podcast" type="button" onclick="setSearchMode('podcast')" aria-selected="false">Podcast</button>
     </div>
     <div id="search-results"></div>
@@ -2468,6 +2469,7 @@ html.control-glass-svg-ok #visual-guide-btn:hover{
     <div class="login-platform-tabs" id="login-platform-tabs">
       <button id="login-provider-netease" class="netease active" type="button" onclick="setLoginProvider('netease')">网易云</button>
       <button id="login-provider-qq" class="qq" type="button" onclick="setLoginProvider('qq')">QQ 音乐</button>
+      <button id="login-provider-navidrome" class="navidrome" type="button" onclick="setLoginProvider('navidrome')">Navidrome</button>
     </div>
     <div class="login-intro">
       <div class="login-intro-kicker">Mineradio</div>
@@ -2486,6 +2488,15 @@ html.control-glass-svg-ok #visual-guide-btn:hover{
       <div class="qq-cookie-actions">
         <div class="qq-cookie-note">从 y.qq.com 的登录会话导入。</div>
         <button id="qq-cookie-save-btn" class="modal-btn primary" type="button" onclick="submitQQCookieLogin()">保存</button>
+      </div>
+    </div>
+    <div id="navidrome-config-panel" class="qq-cookie-panel" style="display:none">
+      <input id="nd-server-input" class="qq-cookie-input" type="text" placeholder="服务器地址 (如 https://navi.liyp.cc)" style="height:36px;margin-bottom:12px" spellcheck="false" autocomplete="off">
+      <input id="nd-user-input" class="qq-cookie-input" type="text" placeholder="用户名" style="height:36px;margin-bottom:12px" spellcheck="false" autocomplete="off">
+      <input id="nd-pass-input" class="qq-cookie-input" type="password" placeholder="密码" style="height:36px;margin-bottom:12px" spellcheck="false" autocomplete="off">
+      <div class="qq-cookie-actions">
+        <div class="qq-cookie-note">配置私有 Navidrome/Subsonic 音乐服务器。</div>
+        <button id="nd-save-btn" class="modal-btn primary" type="button" onclick="submitNdConfig()">保存</button>
       </div>
     </div>
     <div class="btn-row">
@@ -10308,16 +10319,23 @@ function normalizeBeatPrefetchState(state) {
 
 async function fetchBeatPrefetchAudioUrl(song) {
   if (!song) return null;
-  var isQQ = songProviderKey(song) === 'qq';
+  var provider = songProviderKey(song);
+  var isQQ = provider === 'qq';
+  var isND = provider === 'navidrome';
   var requestedQuality = normalizePlaybackQuality(playbackQuality);
-  if (!isQQ && requestedQuality === 'jymaster' && !hasProviderSvip('netease', loginStatus)) requestedQuality = 'hires';
+  if (!isQQ && !isND && requestedQuality === 'jymaster' && !hasProviderSvip('netease', loginStatus)) requestedQuality = 'hires';
   if (isQQ && qqPlaybackQualityCeiling && (requestedQuality === 'jymaster' || requestedQuality === 'hires' || requestedQuality === 'lossless')) requestedQuality = qqPlaybackQualityCeiling;
   var qualityParam = '&quality=' + encodeURIComponent(requestedQuality);
-  var data = isQQ
-    ? await apiJson('/api/qq/song/url?mid=' + encodeURIComponent(song.mid || song.songmid || song.id || '') + '&mediaMid=' + encodeURIComponent(song.mediaMid || song.media_mid || '') + qualityParam)
-    : await apiJson('/api/song/url?id=' + encodeURIComponent(song.id) + qualityParam);
+  var data = null;
+  if (isND) {
+    data = await apiJson('/api/navidrome/song/url?id=' + encodeURIComponent(song.id) + '&suffix=' + encodeURIComponent(song.suffix || ''));
+  } else if (isQQ) {
+    data = await apiJson('/api/qq/song/url?mid=' + encodeURIComponent(song.mid || song.songmid || song.id || '') + '&mediaMid=' + encodeURIComponent(song.mediaMid || song.media_mid || '') + qualityParam);
+  } else {
+    data = await apiJson('/api/song/url?id=' + encodeURIComponent(song.id) + qualityParam);
+  }
   if (!data || !data.url || data.trial) return null;
-  return '/api/audio?url=' + encodeURIComponent(data.url);
+  return isND ? data.url : ('/api/audio?url=' + encodeURIComponent(data.url));
 }
 
 function scheduleQueueBeatPrefetch(fromIdx, delayMs, state) {
@@ -12460,7 +12478,7 @@ function hideAIDepthChip() {
 
 function loadCoverFromUrl(directUrl, opts) {
   opts = opts || {};
-  if (!directUrl || typeof directUrl !== 'string' || !/^https?:\/\//i.test(directUrl)) {
+  if (!directUrl || typeof directUrl !== 'string' || !isProxyableCoverUrl(directUrl)) {
     if (!coverApplyStillCurrent(opts)) return;
     currentCoverSource = null;
     coverProcessToken++;
@@ -15260,16 +15278,18 @@ function isInlineCoverSrc(src) {
   return typeof src === 'string' && (/^data:image\//i.test(src) || /^blob:/i.test(src));
 }
 function isProxyableCoverUrl(url) {
-  return /^https?:\/\//i.test(String(url || ''));
+  var s = String(url || '');
+  return /^https?:\/\//i.test(s) || s.indexOf('/api/') === 0;
 }
 function coverProxySrc(url, cacheBust) {
   if (!url) return '';
   if (isInlineCoverSrc(url)) return url;
   if (!isProxyableCoverUrl(url)) return '';
+  if (String(url).indexOf('/api/') === 0) return url;
   return '/api/cover?url=' + encodeURIComponent(url) + (cacheBust ? '&v=' + Date.now() : '');
 }
 function coverUrlWithSize(url, size) {
-  if (!url || isInlineCoverSrc(url) || !/^https?:\/\//i.test(url)) return url || '';
+  if (!url || isInlineCoverSrc(url) || !isProxyableCoverUrl(url)) return url || '';
   if (!size) return url;
   var param = 'param=' + size + 'y' + size;
   if (/[?&]param=\d+y\d+/i.test(url)) return url.replace(/([?&])param=\d+y\d+/i, '$1' + param);
@@ -15507,7 +15527,7 @@ function renderHomeTiles() {
   var note = document.getElementById('home-rail-note');
   if (!row) return;
   var tiles = [];
-  var loggedOutHome = !homeDiscoverState.loggedIn && !hasAnyPlatformLogin();
+  var loggedOutHome = !homeDiscoverState.loggedIn && !hasAnyPlatformLogin() && !(window.ndConfigCache && window.ndConfigCache.server);
   var weatherSongs = homeWeatherRadioState.radio && homeWeatherRadioState.radio.songs || [];
   var summary = homeListenSummary();
   if (summary.recent && tiles.length < 5) {
@@ -15556,7 +15576,7 @@ function renderHomeTiles() {
 }
 function renderHomeDiscover() {
   var sub = document.getElementById('home-subtitle');
-  var loggedOutHome = !homeDiscoverState.loggedIn && !hasAnyPlatformLogin();
+  var loggedOutHome = !homeDiscoverState.loggedIn && !hasAnyPlatformLogin() && !(window.ndConfigCache && window.ndConfigCache.server);
   var weather = homeWeatherRadioState.weather;
   var radio = homeWeatherRadioState.radio;
   var weatherLocation = weather && weather.location && weather.location.name || homeWeatherRadioState.city || '上海';
@@ -17267,6 +17287,7 @@ function updateSearchModeTabs() {
   var songBtn = document.getElementById('search-mode-song');
   var neteaseBtn = document.getElementById('search-mode-netease');
   var qqBtn = document.getElementById('search-mode-qq');
+  var ndBtn = document.getElementById('search-mode-navidrome');
   var podcastBtn = document.getElementById('search-mode-podcast');
   if (songBtn) {
     songBtn.classList.toggle('active', searchMode === 'song');
@@ -17280,6 +17301,10 @@ function updateSearchModeTabs() {
     qqBtn.classList.toggle('active', searchMode === 'qq');
     qqBtn.setAttribute('aria-selected', searchMode === 'qq' ? 'true' : 'false');
   }
+  if (ndBtn) {
+    ndBtn.classList.toggle('active', searchMode === 'navidrome');
+    ndBtn.setAttribute('aria-selected', searchMode === 'navidrome' ? 'true' : 'false');
+  }
   if (podcastBtn) {
     podcastBtn.classList.toggle('active', searchMode === 'podcast');
     podcastBtn.setAttribute('aria-selected', searchMode === 'podcast' ? 'true' : 'false');
@@ -17292,7 +17317,7 @@ function updateSearchModeTabs() {
   requestAnimationFrame(updateSearchPillGlassDisplacementMap);
 }
 function setSearchMode(mode) {
-  mode = (mode === 'podcast' || mode === 'netease' || mode === 'qq') ? mode : 'song';
+  mode = (mode === 'podcast' || mode === 'netease' || mode === 'qq' || mode === 'navidrome') ? mode : 'song';
   if (searchMode === mode) return;
   searchMode = mode;
   updateSearchModeTabs();
@@ -17507,11 +17532,12 @@ updateSearchModeTabs();
 
 function songProviderKey(song) {
   if (song && (song.provider === 'qq' || song.source === 'qq' || song.type === 'qq')) return 'qq';
+  if (song && (song.provider === 'navidrome' || song.source === 'navidrome' || song.type === 'navidrome')) return 'navidrome';
   return 'netease';
 }
 function songSourceTagHtml(song) {
   var key = songProviderKey(song);
-  var label = key === 'qq' ? 'QQ' : 'NE';
+  var label = key === 'qq' ? 'QQ' : (key === 'navidrome' ? 'ND' : 'NE');
   return '<span class="tag-source ' + key + '">' + label + '</span>';
 }
 function searchResultMetaText(song) {
@@ -17620,6 +17646,7 @@ function scoreSongSearchResult(song, q, sourceIndex) {
   if (/周杰伦|周杰倫|jay\s*chou/i.test(String(q || '')) && !artistMentioned) score -= 28;
   if (album && nq && (album.indexOf(nq) >= 0 || nq.indexOf(album) >= 0)) score += 8;
   if (songProviderKey(song) === 'qq') score += searchIntentPrefersQQ(q) ? 48 : 4;
+  if (songProviderKey(song) === 'navidrome') score += 58;
   if (song && song.playable === false) score -= 12;
   if (!qAsksDerivative) {
     if (derivative) score -= artistMentioned ? 76 : 96;
@@ -17629,7 +17656,7 @@ function scoreSongSearchResult(song, q, sourceIndex) {
   score -= (sourceIndex || 0) * 0.75;
   return score;
 }
-function mergeSongSearchResults(neteaseSongs, qqSongs, limit, q) {
+function mergeSongSearchResults(neteaseSongs, qqSongs, ndSongs, limit, q) {
   var out = [];
   var seen = {};
   function push(song, sourceIndex) {
@@ -17642,26 +17669,34 @@ function mergeSongSearchResults(neteaseSongs, qqSongs, limit, q) {
   }
   (neteaseSongs || []).forEach(function(song, i){ push(song, i); });
   (qqSongs || []).forEach(function(song, i){ push(song, i); });
+  (ndSongs || []).forEach(function(song, i){ push(song, i); });
   out.sort(function(a, b){ return (b._searchScore || 0) - (a._searchScore || 0); });
   return out.slice(0, limit);
 }
 async function fetchMusicSearchResults(q, mode) {
   if (mode === 'qq') {
     var qqOnly = await apiJson('/api/qq/search?keywords=' + encodeURIComponent(q) + '&limit=12');
-    return mergeSongSearchResults([], qqOnly.songs || [], 18, q);
+    return mergeSongSearchResults([], qqOnly.songs || [], [], 18, q);
+  }
+  if (mode === 'navidrome') {
+    var ndOnly = await apiJson('/api/navidrome/search?keywords=' + encodeURIComponent(q));
+    return mergeSongSearchResults([], [], ndOnly.songs || [], 18, q);
   }
   if (mode === 'netease') {
     var neOnly = await apiJson('/api/search?keywords=' + encodeURIComponent(q) + '&limit=18');
-    return mergeSongSearchResults(neOnly.songs || [], [], 18, q);
+    return mergeSongSearchResults(neOnly.songs || [], [], [], 18, q);
   }
   var result = await Promise.allSettled([
     apiJson('/api/search?keywords=' + encodeURIComponent(q) + '&limit=14'),
-    apiJson('/api/qq/search?keywords=' + encodeURIComponent(q) + '&limit=12')
+    apiJson('/api/qq/search?keywords=' + encodeURIComponent(q) + '&limit=12'),
+    apiJson('/api/navidrome/search?keywords=' + encodeURIComponent(q))
   ]);
   var neteaseSongs = result[0].status === 'fulfilled' ? ((result[0].value && result[0].value.songs) || []) : [];
   var qqSongs = result[1].status === 'fulfilled' ? ((result[1].value && result[1].value.songs) || []) : [];
+  var ndSongs = result[2].status === 'fulfilled' ? ((result[2].value && result[2].value.songs) || []) : [];
   if (result[1].status === 'rejected') console.warn('QQ search failed:', result[1].reason);
-  return mergeSongSearchResults(neteaseSongs, qqSongs, 18, q);
+  if (result[2].status === 'rejected') console.warn('ND search failed:', result[2].reason);
+  return mergeSongSearchResults(neteaseSongs, qqSongs, ndSongs, 18, q);
 }
 function renderSongSearchResults(songs) {
   playlist = songs || [];
@@ -18463,14 +18498,20 @@ async function playQueueAt(idx, opts) {
     markPlayPhase('source-url');
     var isQQPlayback = songProviderKey(song) === 'qq';
     var requestedQuality = normalizePlaybackQuality(opts.qualityOverride || playbackQuality);
-    if (!isQQPlayback && requestedQuality === 'jymaster' && !hasProviderSvip('netease', loginStatus)) requestedQuality = 'hires';
+    var isNDPlayback = songProviderKey(song) === 'navidrome';
+    if (!isQQPlayback && !isNDPlayback && requestedQuality === 'jymaster' && !hasProviderSvip('netease', loginStatus)) requestedQuality = 'hires';
     if (isQQPlayback && qqPlaybackQualityCeiling && (requestedQuality === 'jymaster' || requestedQuality === 'hires' || requestedQuality === 'lossless')) {
       requestedQuality = qqPlaybackQualityCeiling;
     }
     var qualityParam = '&quality=' + encodeURIComponent(requestedQuality);
-    var data = isQQPlayback
-      ? await apiJson('/api/qq/song/url?mid=' + encodeURIComponent(song.mid || song.songmid || song.id || '') + '&mediaMid=' + encodeURIComponent(song.mediaMid || song.media_mid || '') + qualityParam)
-      : await apiJson('/api/song/url?id=' + song.id + qualityParam);
+    var data = null;
+    if (isNDPlayback) {
+      data = await apiJson('/api/navidrome/song/url?id=' + encodeURIComponent(song.id) + '&suffix=' + encodeURIComponent(song.suffix || ''));
+    } else if (isQQPlayback) {
+      data = await apiJson('/api/qq/song/url?mid=' + encodeURIComponent(song.mid || song.songmid || song.id || '') + '&mediaMid=' + encodeURIComponent(song.mediaMid || song.media_mid || '') + qualityParam);
+    } else {
+      data = await apiJson('/api/song/url?id=' + encodeURIComponent(song.id) + qualityParam);
+    }
     if (token !== trackSwitchToken) return;
     if (!data.url) {
       if (isQQPlayback && await retryQQPlaybackWithCompatibleQuality(song, idx, token, opts, data, requestedQuality)) return;
@@ -18507,7 +18548,7 @@ async function playQueueAt(idx, opts) {
     }
     bindPlaybackProgressEvents(audio);
     applyVolumeToAudio();
-    var proxyAudioUrl = '/api/audio?url=' + encodeURIComponent(data.url);
+    var proxyAudioUrl = isNDPlayback ? data.url : ('/api/audio?url=' + encodeURIComponent(data.url));
     audio.src = proxyAudioUrl;
     updatePlaybackProgressUi();
     audio.onended = function(){
@@ -19023,6 +19064,9 @@ async function fetchLyric(songOrId, token) {
       var mid = song.mid || song.songmid || song.id || '';
       var qqId = song.qqId || (/^\d+$/.test(String(song.id || '')) ? song.id : '');
       endpoint = '/api/qq/lyric?mid=' + encodeURIComponent(mid) + '&id=' + encodeURIComponent(qqId);
+    } else if (provider === 'navidrome') {
+      var songId = song ? song.id : songOrId;
+      endpoint = '/api/navidrome/lyric?id=' + encodeURIComponent(songId);
     } else {
       var songId = song ? song.id : songOrId;
       endpoint = '/api/lyric?id=' + encodeURIComponent(songId);
@@ -23409,6 +23453,12 @@ function renderUserBtn() {
     btn.innerHTML = '<img id="user-avatar" src="' + providerAvatarSrc(activeAccountProvider, st) + '">' +
                     '<span>' + escHtml(st.nickname || meta.label) + '</span>' +
                     providerVipBadge(activeAccountProvider, st, 'user-vip-tag');
+  } else if (typeof window.ndConfigCache !== 'undefined' && window.ndConfigCache && window.ndConfigCache.server) {
+    btn.classList.add('logged-in');
+    btn.classList.remove('logged-out');
+    btn.title = 'Navidrome 已连接';
+    btn.innerHTML = '<svg style="width:16px;height:16px;margin-right:6px;transform:translateY(1px)" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 19V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14M8 12h8M8 8h8M8 16h4"/></svg>' +
+                    '<span>' + escHtml(window.ndConfigCache.username || 'Navidrome') + '</span>';
   } else {
     btn.classList.remove('logged-in');
     btn.classList.add('logged-out');
@@ -23419,51 +23469,74 @@ function renderUserBtn() {
 }
 async function showLoginModal(opts) {
   opts = opts || {};
-  if (opts.provider) loginProvider = opts.provider === 'qq' ? 'qq' : 'netease';
+  if (opts.provider) {
+    if (opts.provider === 'navidrome') loginProvider = 'navidrome';
+    else loginProvider = opts.provider === 'qq' ? 'qq' : 'netease';
+  }
   var modal = document.getElementById('login-modal');
   openGsapModal(modal);
   updateLoginProviderUi();
-  await refreshQr();
+  if (loginProvider === 'navidrome') {
+    await loadNdConfigIntoModal();
+  } else {
+    await refreshQr();
+  }
 }
 function closeLoginModal() {
   stopQrPoll();
   closeGsapModal(document.getElementById('login-modal'));
 }
 function setLoginProvider(provider, silent) {
-  loginProvider = provider === 'qq' ? 'qq' : 'netease';
+  if (provider === 'navidrome') loginProvider = 'navidrome';
+  else loginProvider = provider === 'qq' ? 'qq' : 'netease';
   updateLoginProviderUi();
-  if (!silent && document.getElementById('login-modal').classList.contains('show')) refreshQr();
+  if (!silent && document.getElementById('login-modal').classList.contains('show')) {
+    if (loginProvider === 'navidrome') loadNdConfigIntoModal();
+    else refreshQr();
+  }
 }
 function updateLoginProviderUi() {
   var meta = platformMeta(loginProvider);
   var isQQ = loginProvider === 'qq';
+  var isND = loginProvider === 'navidrome';
   var title = document.getElementById('login-modal-title');
   var desc = document.getElementById('login-modal-desc');
   var shell = document.getElementById('qr-shell');
   var st = document.getElementById('qr-status');
   var refreshBtn = document.getElementById('refresh-qr-btn');
   var qqPanel = document.getElementById('qq-cookie-panel');
+  var ndPanel = document.getElementById('navidrome-config-panel');
   var qqCookieToggle = document.getElementById('qq-cookie-toggle-btn');
   var qqCard = document.getElementById('qq-web-login-card');
   var neteaseBtn = document.getElementById('login-provider-netease');
   var qqBtn = document.getElementById('login-provider-qq');
+  var ndBtn = document.getElementById('login-provider-navidrome');
   var canOpenNeteaseWeb = !!(window.desktopWindow && typeof window.desktopWindow.openNeteaseMusicLogin === 'function');
   if (neteaseBtn) neteaseBtn.classList.toggle('active', loginProvider === 'netease');
   if (qqBtn) qqBtn.classList.toggle('active', isQQ);
-  if (title) title.textContent = '扫码登录' + meta.label;
-  if (desc) desc.innerHTML = isQQ
-    ? '打开 <b>QQ 音乐官方网页登录窗口</b> 扫码，成功后会自动同步账号会话。'
-    : (canOpenNeteaseWeb
-      ? '打开 <b>网易云音乐官方网页登录窗口</b> 扫码，避开接口二维码风控；成功后会自动同步账号会话。'
-      : '使用 <b>网易云音乐 App</b> 扫码，可同步歌单、红心与播客。');
+  if (ndBtn) ndBtn.classList.toggle('active', isND);
+  if (title) title.textContent = isND ? '配置 Navidrome' : ('扫码登录' + meta.label);
+  if (desc) desc.innerHTML = isND
+    ? '配置私有 Navidrome / Subsonic 音乐服务器'
+    : (isQQ
+      ? '打开 <b>QQ 音乐官方网页登录窗口</b> 扫码，成功后会自动同步账号会话。'
+      : (canOpenNeteaseWeb
+        ? '打开 <b>网易云音乐官方网页登录窗口</b> 扫码，避开接口二维码风控；成功后会自动同步账号会话。'
+        : '使用 <b>网易云音乐 App</b> 扫码，可同步歌单、红心与播客。'));
   if (shell) {
+    shell.style.display = isND ? 'none' : '';
     shell.classList.toggle('web-login-preview', isQQ || canOpenNeteaseWeb);
     shell.classList.toggle('qq-preview', isQQ);
     shell.classList.toggle('netease-preview', !isQQ && canOpenNeteaseWeb);
   }
-  if (qqPanel) qqPanel.classList.toggle('show', isQQ && qqManualCookieOpen);
+  if (ndPanel) ndPanel.style.display = isND ? 'block' : 'none';
+  if (qqPanel) {
+    qqPanel.classList.toggle('show', isQQ && qqManualCookieOpen);
+    qqPanel.style.display = isND ? 'none' : '';
+  }
   if (qqCookieToggle) {
     qqCookieToggle.classList.toggle('show', isQQ);
+    qqCookieToggle.style.display = isND ? 'none' : '';
     qqCookieToggle.textContent = qqManualCookieOpen ? '收起导入' : '手动导入';
   }
   if (qqCard) {
@@ -23476,12 +23549,14 @@ function updateLoginProviderUi() {
       : (neteaseWebLoginBusy ? '等待扫码确认' : '打开官方登录窗口');
   }
   if (st) {
+    st.style.display = isND ? 'none' : '';
     st.className = isQQ ? 'preview' : '';
     st.textContent = isQQ
       ? (qqLoginStatus.loggedIn ? ('已保存 QQ 音乐会话 · ' + (qqLoginStatus.nickname || '')) : '点击“扫码登录”打开 QQ 音乐官方窗口')
       : (canOpenNeteaseWeb ? '点击“网页登录”打开网易云官方窗口' : '正在生成二维码…');
   }
   if (refreshBtn) {
+    refreshBtn.style.display = isND ? 'none' : '';
     refreshBtn.disabled = isQQ ? !!qqWebLoginBusy : !!neteaseWebLoginBusy;
     refreshBtn.textContent = isQQ ? (qqWebLoginBusy ? '等待扫码…' : '扫码登录') : (canOpenNeteaseWeb ? (neteaseWebLoginBusy ? '等待扫码…' : '网页登录') : '刷新二维码');
     refreshBtn.onclick = isQQ ? openQQWebLogin : (canOpenNeteaseWeb ? openNeteaseWebLogin : refreshQr);
@@ -26874,6 +26949,48 @@ function animate() {
   renderer.render(scene, camera);
 }
 animate();
+// ========== Navidrome Logic ==========
+window.ndConfigCache = null;
+setTimeout(async function() {
+  try {
+    var res = await apiJson('/api/navidrome/config');
+    if (res && res.data && res.data.server) {
+      window.ndConfigCache = res.data;
+      if (typeof renderUserBtn === 'function') renderUserBtn();
+    }
+  } catch (e) {}
+}, 300);
+
+async function loadNdConfigIntoModal() {
+  try {
+    var res = await apiJson('/api/navidrome/config');
+    if (res && res.data) {
+      document.getElementById('nd-server-input').value = res.data.server || '';
+      document.getElementById('nd-user-input').value = res.data.username || '';
+      document.getElementById('nd-pass-input').value = res.data.password || '';
+    }
+  } catch (e) {}
+}
+async function submitNdConfig() {
+  var conf = {
+    server: document.getElementById('nd-server-input').value.trim(),
+    username: document.getElementById('nd-user-input').value.trim(),
+    password: document.getElementById('nd-pass-input').value
+  };
+  try {
+    await fetch('/api/navidrome/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(conf)
+    });
+    window.ndConfigCache = conf;
+    if (typeof renderUserBtn === 'function') renderUserBtn();
+    showToast('Navidrome 配置已保存');
+    closeLoginModal();
+  } catch (e) {
+    showToast('保存失败');
+  }
+}
 </script>
 </body>
 </html>
