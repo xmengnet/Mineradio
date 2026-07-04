@@ -47,9 +47,12 @@ const CHROMIUM_PERFORMANCE_SWITCHES = [
   ['disable-background-timer-throttling'],
   ['disable-renderer-backgrounding'],
   ['disable-backgrounding-occluded-windows'],
-  ['force_high_performance_gpu'],
   ['use-angle', process.platform === 'win32' ? 'd3d11' : 'default'],
 ];
+// force_high_performance_gpu 仅在 Windows 上使用，Linux 上会导致 GPU 进程崩溃
+if (process.platform === 'win32') {
+  CHROMIUM_PERFORMANCE_SWITCHES.push(['force_high_performance_gpu']);
+}
 for (const [name, value] of CHROMIUM_PERFORMANCE_SWITCHES) {
   if (value == null) app.commandLine.appendSwitch(name);
   else app.commandLine.appendSwitch(name, value);

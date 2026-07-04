@@ -1710,6 +1710,32 @@ async function handleSearch(keywords, limit) {
 async function handleDiscoverHome() {
   const info = await getLoginInfo();
   const loggedIn = !!(info && info.loggedIn);
+  const ndReady = !!(navidromeConfig.server && navidromeConfig.username);
+
+  // 如果 Navidrome 已配置但网易云未登录，返回 Navidrome 随机推荐
+  if (!loggedIn && ndReady) {
+    let dailySongs = [];
+    try {
+      const auth = navidromeAuthParams();
+      const ndBase = navidromeConfig.server.replace(/\/+$/, '');
+      const resp = await fetch(`${ndBase}/rest/getRandomSongs?size=12&${auth}`).then(r => r.json());
+      const raw = resp['subsonic-response']?.randomSongs?.song || [];
+      dailySongs = (Array.isArray(raw) ? raw : []).map(ndSongToMineradio).filter(s => s && s.id);
+    } catch (e) {
+      console.warn('[DiscoverHome] Navidrome random songs failed:', e.message);
+    }
+    return {
+      loggedIn: false,
+      ndRecommended: true,
+      user: null,
+      dailySongs,
+      playlists: [],
+      podcasts: [],
+      mode: 'navidrome',
+      updatedAt: Date.now(),
+    };
+  }
+
   if (!loggedIn) {
     return {
       loggedIn: false,
@@ -4201,6 +4227,29 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ---------- Navidrome 代理 ----------
+  if (pn === '/api/navidrome/random-songs') {
+    if (!navidromeConfig.server) { sendJSON(res, { code: 200, songs: [] }); return; }
+    const count = Math.min(Math.max(Number(url.searchParams.get('count')) || 12, 1), 50);
+    const auth = navidromeAuthParams();
+    const ndBase = navidromeConfig.server.replace(/\/+$/, '');
+    try {
+      const resp = await fetch(`${ndBase}/rest/getRandomSongs?size=${count}&${auth}`).then(r => r.json());
+      const songs = (resp['subsonic-response']?.randomSongs?.song || []).map(ndSongToMineradio).filter(s => s && s.id);
+      sendJSON(res, { code: 200, songs });
+    } catch (e) { sendJSON(res, { code: 500, songs: [] }); }
+    return;
+  }
+  if (pn === '/api/navidrome/starred') {
+    if (!navidromeConfig.server) { sendJSON(res, { code: 200, songs: [] }); return; }
+    const auth = navidromeAuthParams();
+    const ndBase = navidromeConfig.server.replace(/\/+$/, '');
+    try {
+      const resp = await fetch(`${ndBase}/rest/getStarred?${auth}`).then(r => r.json());
+      const songs = (resp['subsonic-response']?.starred?.song || []).map(ndSongToMineradio).filter(s => s && s.id);
+      sendJSON(res, { code: 200, songs });
+    } catch (e) { sendJSON(res, { code: 500, songs: [] }); }
+    return;
+  }
   if (pn === '/api/navidrome/config') {
     if (req.method === 'POST') {
       let body = '';
@@ -4321,9 +4370,11 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  const ndStatus = navidromeConfig.server ? `已连接(${navidromeConfig.server})` : '未配置';
   console.log('======================================================');
   console.log(' 粒子音乐可视化 v2  →  http://localhost:' + PORT);
   console.log(' 登录态: ' + (userCookie ? '已登录(cookie已加载)' : '未登录'));
+  console.log(' Navidrome: ' + ndStatus);
   console.log('======================================================');
 });
 
